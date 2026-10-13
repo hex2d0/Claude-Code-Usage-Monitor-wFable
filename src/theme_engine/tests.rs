@@ -3182,7 +3182,7 @@ fn claude_block_gauge_text_shows_percent_largest_countdown_unit_and_placeholders
         (3_600 - 30, "59m"),
         (59, "59s"),
     ] {
-        let reset = SystemTime::now() + Duration::from_millis(seconds * 1_000 + 500);
+        let reset = SystemTime::now() + Duration::from_millis(seconds * 1_000 + 900);
         let usage = claude_block_gauge_usage(67.0, Some(reset), true);
         for row in rows {
             assert_eq!(

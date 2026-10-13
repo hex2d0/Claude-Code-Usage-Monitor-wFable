@@ -278,7 +278,7 @@ try {
         $engine = Get-Content "$PSScriptRoot\..\..\src\theme_engine.rs" -Raw
         $builtins = [regex]::Match($engine, '(?s)const BUILTIN_THEME_SOURCES.*?= &\[(.*?)\];').Groups[1].Value
         $files = [regex]::Matches($builtins, '/([a-z0-9-]+)\.json')
-        Require ($files.Count -eq 3)
+        Require ($files.Count -eq 4)
         foreach ($file in $files) {
             $id = $file.Groups[1].Value
             Require ($source.Contains("'$id'") -or $verticalSource.Contains("$id.json"))

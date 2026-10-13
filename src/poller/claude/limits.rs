@@ -209,6 +209,19 @@ mod tests {
     }
 
     #[test]
+    fn an_entry_with_both_usage_spellings_is_dropped_without_hiding_others() {
+        // `utilization` is an alias of `percent`, so serde rejects an entry
+        // carrying both and that quota reads as missing.
+        let values = vec![
+            json!({"kind":"weekly_scoped","percent":10,"utilization":10,"scope":{"model":{"display_name":"Fable"}}}),
+            json!({"kind":"weekly_all","percent":17}),
+        ];
+        let limits = parse(&values, &BTreeMap::new());
+        assert_eq!(limits.len(), 1);
+        assert_eq!(limits[0].key, "weekly_all");
+    }
+
+    #[test]
     fn legacy_buckets_and_new_array_coexist_without_duplicate_model_caps() {
         let legacy = BTreeMap::from([
             (
