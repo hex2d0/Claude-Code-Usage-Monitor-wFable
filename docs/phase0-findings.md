@@ -5,6 +5,8 @@
 
 コードは変更していない。このコミットで追加するのはこの文書だけ。
 
+> **2026-10-13追記：** Phase 1・2は完了し、[hex2d0/Claude-Code-Usage-Monitor-wFable#1](https://github.com/hex2d0/Claude-Code-Usage-Monitor-wFable/pull/1)でマージされた。手順2の結果と実機確認の結果は§8にまとめた。§0〜§7はPhase 0時点の記録のまま残している。
+
 ---
 
 ## 0. 要約
@@ -293,14 +295,24 @@ value = (p + floor(p / 10)) / 109 * 100 + 0.001
 
 ---
 
-## 8. 未確認のこと
+## 8. Phase 0以降に確認できたこと（2026-10-13更新）
 
-- `/api/oauth/usage`の実際のレスポンス（§3）
-- Windows 11の実機での表示：DPI 100%・125%・150%、ライトとダークのタスクバー、半透明のタスクバーと25%アルファの見え方、Explorer再起動後の復帰
-- 実機のSegoe UIで`ALL5H`や`100%`が何pxになるか（テキスト枠の幅を決めるのに必要）
-- MSVCターゲットでのビルドと`cargo test`（上流CIの構成）
-- 新しいテーマの幅（約210論理px）が、タスクバーのロックが無効なときにアプリボタンと重なって退避しないか
-- 上流issueの[CodeZeno/Claude-Code-Usage-Monitor#56](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/56)と[CodeZeno/Claude-Code-Usage-Monitor#61](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/61)に`limits`の実例が載っている可能性がある。このセッションからはissueを読めないため未確認。
+Phase 1・2のコミットは`2eee8ff`、`22f778b`、`4c58a48`、`745eb89`。テーマの表示名は「Claude + Fable Block Gauge」（IDは`claude-block-gauge`）。
+
+### 8.1 確認済み
+
+| 項目 | 結果 |
+|---|---|
+| 手順2：Fable枠の構造 | §3.3の方法A（`usage-cache.json`）で確認した。`limits`は配列で、Fable枠は`kind: "weekly_scoped"`、`scope.model.display_name: "Fable"`、`scope.model.id: null`。キーは想定どおり`weekly_scoped_fable`になる。`scope`には`surface: null`もあった。`is_active`はfalseなので、`claude.scoped.*`では参照できない。使用率には小数があり得る（例：13.6170508）。リセット時刻は秒単位で、パースに成功している。ほかに`session`、`weekly_all`と、未知の種類の枠が1つあった |
+| Windows 11の実機での表示 | ユーザーが実機で確認し、問題なしと報告した。確認項目はPLAN Phase 2の4（DPI 100%・125%・150%、ライトとダークのタスクバー、カウントダウンの単位切り替え、Fable枠なし・stale・認証エラーの表示、Explorer再起動後の復帰）と、`--diagnose`のログ |
+| 実機のSegoe UIでの文字幅 | 上の実機確認で、見出し・%・カウントダウンの表示に問題は報告されていない |
+| 上流issueの実例（CodeZeno/Claude-Code-Usage-Monitor#56、CodeZeno/Claude-Code-Usage-Monitor#61） | 実データでキーを確認できたため、参照の必要がなくなった |
+
+### 8.2 まだ確認していないこと
+
+- 生レスポンスの元のフィールド名（`percent`か`utilization`か）と、`resets_at`の元の書式。キャッシュにはパース後の値しか残らないため。ただし、現在のパーサで読めていることは確認できている
+- MSVCターゲットでのビルドと`cargo test`（上流CIの構成）。こちらではGNUターゲットでのみビルドとテストを実行した
+- タスクバーのロックが無効な状態で、アプリボタンがウィジェットの位置まで並んだときの挙動。上流のテーマと同じ仕組みで浮動表示に退避するはずだが、このテーマの幅（222論理px）では個別に確かめていない
 
 ---
 
