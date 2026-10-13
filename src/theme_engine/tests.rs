@@ -1789,10 +1789,11 @@ fn starter_tray_icons_follow_enabled_providers() {
 
 #[test]
 fn built_in_themes_are_valid_and_cannot_be_saved_as_editable_themes() {
-    assert_eq!(BUILTIN_THEME_SOURCES.len(), 3);
+    assert_eq!(BUILTIN_THEME_SOURCES.len(), 4);
     assert_eq!(BUILTIN_THEME_SOURCES[0].0, CLASSIC_THEME_ID);
     assert_eq!(BUILTIN_THEME_SOURCES[1].0, COMPACT_FLUENT_QUAD_THEME_ID);
     assert_eq!(BUILTIN_THEME_SOURCES[2].0, CLASSIC_VERTICAL_THEME_ID);
+    assert_eq!(BUILTIN_THEME_SOURCES[3].0, CLAUDE_BLOCK_GAUGE_THEME_ID);
     assert!(REMOVED_BUILTIN_THEME_IDS
         .iter()
         .all(|id| !is_builtin_theme_id(id)));
@@ -3050,4 +3051,195 @@ fn action_values_are_found_around_the_caret() {
     assert_eq!(at("open_url(\"https://|\")"), None);
     assert_eq!(at(r#"layer_actions("toggle(self, |render)")"#), None);
     assert_eq!(at(r#"layer_actions(|"set(self, x, 1)")"#), None);
+}
+
+fn claude_block_gauge() -> ThemeDocument {
+    let mut theme: ThemeDocument =
+        serde_json::from_str(include_str!("../themes/claude-block-gauge.json")).unwrap();
+    theme.prepare_runtime();
+    theme
+}
+
+fn claude_block_gauge_usage(
+    percentage: f64,
+    reset: Option<std::time::SystemTime>,
+    fable: bool,
+) -> AppUsageData {
+    let section = crate::models::UsageSection {
+        available: true,
+        percentage,
+        resets_at: reset,
+    };
+    let limits = if fable {
+        vec![crate::models::UsageLimit {
+            key: "weekly_scoped_fable".into(),
+            kind: "weekly_scoped".into(),
+            label: "Fable".into(),
+            model: Some("Fable".into()),
+            usage: section.clone(),
+            ..Default::default()
+        }]
+    } else {
+        Vec::new()
+    };
+    AppUsageData::from_iter([(
+        ProviderId::Claude,
+        crate::models::UsageData {
+            session: section.clone(),
+            weekly: section,
+            limits,
+            ..Default::default()
+        },
+    )])
+}
+
+fn claude_block_gauge_template(theme: &ThemeDocument, id: &str) -> String {
+    theme.surfaces[0]
+        .children
+        .iter()
+        .find(|object| object.id == id)
+        .and_then(|object| match &object.content {
+            SceneContent::Text { template, .. } => Some(template.clone()),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[test]
+fn claude_block_gauge_fills_one_pixel_per_percent_inside_ten_blocks() {
+    const USED: u32 = 0xFFDE7356;
+    let theme = claude_block_gauge();
+    let gauges = ["session", "weekly", "fable"].map(|row| {
+        let object = theme.surfaces[0]
+            .children
+            .iter()
+            .find(|object| object.id == format!("{row}-gauge"))
+            .unwrap();
+        let number = |expression: &Expression| expression.0.parse::<u32>().unwrap();
+        assert_eq!(number(&object.width), 109);
+        (
+            number(&object.x),
+            number(&object.y) + number(&object.height) / 2,
+        )
+    });
+    // Text rounds half to even ("{:.0}"), so the gauge does too.
+    for (percentage, filled) in [
+        (0.0, 0),
+        (1.0, 1),
+        (10.0, 10),
+        (37.0, 37),
+        (99.0, 99),
+        (100.0, 100),
+        (112.5, 100),
+        (-5.0, 0),
+        (12.5, 12),
+        (13.5, 14),
+        (13.617_050_8, 14),
+    ] {
+        for fable in [true, false] {
+            let usage = claude_block_gauge_usage(percentage, None, fable);
+            let rendered = render_theme_surface_with_runtime(
+                &theme,
+                0,
+                Some(&usage),
+                ThemeRuntime::new(true, false, false),
+            );
+            assert!(rendered.warnings.is_empty(), "{:?}", rendered.warnings);
+            assert_eq!(rendered.height, 46);
+            for (row, (x, y)) in gauges.into_iter().enumerate() {
+                // A missing Fable quota leaves its gauge entirely unused.
+                let filled = if row == 2 && !fable { 0 } else { filled };
+                for along in 0..109 {
+                    let pixel = rendered.pixels[(y * rendered.width + x + along) as usize];
+                    let (block, within) = (along / 11, along % 11);
+                    let context = format!("{percentage}% fable={fable} row={row} x={along}");
+                    if within == 10 {
+                        assert_eq!(pixel, 0, "gap {context}");
+                    } else if block * 10 + within < filled {
+                        assert_eq!(pixel, USED, "used {context}");
+                    } else {
+                        assert_eq!(pixel >> 24, 0x40, "unused {context}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn claude_block_gauge_text_shows_percent_largest_countdown_unit_and_placeholders() {
+    use std::time::{Duration, SystemTime};
+    let theme = claude_block_gauge();
+    let rows = ["session", "weekly", "fable"];
+    let text = |usage: Option<&AppUsageData>, runtime: ThemeRuntime, object: &str| {
+        let context = DataContext::from_usage_with_runtime(usage, &Canvas::default(), runtime);
+        format_template(&claude_block_gauge_template(&theme, object), &context)
+    };
+    let runtime = ThemeRuntime::new(true, false, false);
+    for (seconds, countdown) in [
+        (4 * 86_400 + 600, "4d"),
+        (86_400 - 600, "23h"),
+        (3_600 - 30, "59m"),
+        (59, "59s"),
+    ] {
+        let reset = SystemTime::now() + Duration::from_millis(seconds * 1_000 + 500);
+        let usage = claude_block_gauge_usage(67.0, Some(reset), true);
+        for row in rows {
+            assert_eq!(
+                text(Some(&usage), runtime, &format!("{row}-percent")),
+                "67%"
+            );
+            assert_eq!(
+                text(Some(&usage), runtime, &format!("{row}-countdown")),
+                countdown,
+                "{row} {seconds}s"
+            );
+        }
+    }
+
+    // Past resets wait for the next poll at 0s; unknown resets show --.
+    let past =
+        claude_block_gauge_usage(17.0, Some(SystemTime::now() - Duration::from_secs(5)), true);
+    let unknown = claude_block_gauge_usage(17.0, None, true);
+    for row in rows {
+        assert_eq!(
+            text(Some(&past), runtime, &format!("{row}-countdown")),
+            "0s"
+        );
+        assert_eq!(
+            text(Some(&unknown), runtime, &format!("{row}-countdown")),
+            "--"
+        );
+    }
+
+    let reset = SystemTime::now() + Duration::from_secs(3 * 86_400 + 600);
+    let without_fable = claude_block_gauge_usage(17.0, Some(reset), false);
+    assert_eq!(
+        text(Some(&without_fable), runtime, "weekly-countdown"),
+        "3d"
+    );
+    assert_eq!(text(Some(&without_fable), runtime, "fable-percent"), "--");
+    assert_eq!(text(Some(&without_fable), runtime, "fable-countdown"), "--");
+
+    // Remaining-usage display does not change the used percent.
+    let usage = claude_block_gauge_usage(67.0, Some(reset), true);
+    assert_eq!(
+        text(Some(&usage), runtime.with_countdown(true), "fable-percent"),
+        "67%"
+    );
+    // Before the first poll and after an auth failure, as upstream themes show.
+    for row in rows {
+        let loading = runtime.with_poll_state(false, false);
+        let failed = runtime.with_poll_state(false, true);
+        assert_eq!(text(None, loading, &format!("{row}-percent")), "--");
+        assert_eq!(text(None, failed, &format!("{row}-percent")), "!");
+        assert_eq!(text(None, failed, &format!("{row}-countdown")), "--");
+    }
+    for variant in ["dark", "light"] {
+        let headings = rows
+            .iter()
+            .map(|row| claude_block_gauge_template(&theme, &format!("{row}-heading-{variant}")))
+            .collect::<Vec<_>>();
+        assert_eq!(headings, ["ALL5H", "ALL1W", "FBL1W"]);
+    }
 }
