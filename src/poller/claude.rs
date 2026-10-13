@@ -1208,6 +1208,85 @@ mod tests {
         usage_from_response(response)
     }
 
+    // Usage values and reset times from a live usage cache (2026-10-13). The
+    // cache stores parsed quotas, so field spellings follow the parser, and
+    // an unrecognized quota kind has a neutral name.
+    const LIVE_USAGE: &str = r#"{
+        "five_hour": {"utilization": 67.0, "resets_at": "2026-10-13T07:10:00+00:00"},
+        "seven_day": {"utilization": 17.0, "resets_at": "2026-10-18T00:00:00+00:00"},
+        "limits": [
+            {"kind": "unrecognized_quota", "percent": 13.6170508,
+             "resets_at": "2026-11-05T07:59:00+00:00", "scope": null, "is_active": false},
+            {"kind": "session", "percent": 67.0,
+             "resets_at": "2026-10-13T07:10:00+00:00", "scope": null, "is_active": true},
+            {"kind": "weekly_all", "percent": 17.0,
+             "resets_at": "2026-10-18T00:00:00+00:00", "scope": null, "is_active": false},
+            {"kind": "weekly_scoped", "percent": 0.0,
+             "resets_at": "2026-10-18T00:00:00+00:00",
+             "scope": {"model": {"display_name": "Fable", "id": null}, "surface": null},
+             "is_active": false}
+        ]
+    }"#;
+
+    fn live_usage(edit: impl FnOnce(&mut Vec<serde_json::Value>)) -> UsageData {
+        let mut response: serde_json::Value = serde_json::from_str(LIVE_USAGE).unwrap();
+        edit(response["limits"].as_array_mut().unwrap());
+        usage_from_response(serde_json::from_value(response).unwrap())
+    }
+
+    fn fable_limit(data: &UsageData) -> Option<&crate::models::UsageLimit> {
+        data.limits
+            .iter()
+            .find(|limit| limit.key == "weekly_scoped_fable")
+    }
+
+    #[test]
+    fn live_shaped_usage_reads_the_fable_weekly_limit() {
+        let data = live_usage(|_| {});
+        assert_eq!(data.session.percentage, 67.0);
+        assert_eq!(data.weekly.percentage, 17.0);
+        assert_eq!(data.limits.len(), 4);
+        let fable = fable_limit(&data).expect("the Fable weekly limit should be parsed");
+        assert_eq!(fable.label, "Fable");
+        assert!(fable.usage.available && !fable.is_active);
+        assert_eq!(fable.usage.percentage, 0.0);
+        assert_eq!(
+            fable.usage.resets_at,
+            Some(UNIX_EPOCH + Duration::from_secs(1_792_281_600))
+        );
+        assert!(data
+            .limits
+            .iter()
+            .any(|limit| limit.key == "unrecognized_quota" && limit.usage.percentage > 13.6));
+    }
+
+    #[test]
+    fn usage_without_a_fable_limit_keeps_the_standard_windows() {
+        let data = live_usage(|limits| limits.retain(|limit| limit["kind"] != "weekly_scoped"));
+        assert!(fable_limit(&data).is_none());
+        assert_eq!(data.limits.len(), 3);
+        assert_eq!(data.session.percentage, 67.0);
+        assert_eq!(data.weekly.percentage, 17.0);
+        assert!(data.session.resets_at.is_some() && data.weekly.resets_at.is_some());
+    }
+
+    #[test]
+    fn a_fable_limit_without_a_reset_time_stays_available() {
+        let data = live_usage(|limits| {
+            for limit in limits
+                .iter_mut()
+                .filter(|limit| limit["kind"] == "weekly_scoped")
+            {
+                limit["resets_at"] = serde_json::Value::Null;
+            }
+        });
+        let fable = fable_limit(&data).expect("a missing reset must not drop the limit");
+        assert!(fable.usage.available);
+        assert_eq!(fable.usage.percentage, 0.0);
+        assert_eq!(fable.usage.resets_at, None);
+        assert!(data.weekly.resets_at.is_some());
+    }
+
     #[test]
     fn reported_windows_without_resets_remain_available_at_zero_usage() {
         for percentage in [0.0, 42.0] {
