@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "id": "claude-block-gauge",
-  "name": "Claude Block Gauge",
+  "name": "Claude + Fable Block Gauge",
   "surfaces": [
     {
       "id": "main",
