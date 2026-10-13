@@ -6,6 +6,7 @@ fn builtins_leave_incompatible_taskbars_and_keep_compatible_layouts_docked() {
         include_str!("../themes/classic-usage-widget.json"),
         include_str!("../themes/compact-fluent-quad.json"),
         include_str!("../themes/classic-vertical.json"),
+        include_str!("../themes/claude-block-gauge.json"),
     ];
     for (theme_index, source) in sources.iter().enumerate() {
         let mut theme: ThemeDocument = serde_json::from_str(source).unwrap();

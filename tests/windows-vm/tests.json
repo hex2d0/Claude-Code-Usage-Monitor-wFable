@@ -350,7 +350,7 @@
     },
     {
       "id": "locale-and-theme-gallery",
-      "description": "All 14 languages by both built-ins, dashboard/widget gallery and malformed theme fallback",
+      "description": "All 14 languages by the horizontal built-ins, dashboard/widget gallery and malformed theme fallback",
       "script": "cases/locale-and-theme-gallery.ps1",
       "suites": [
         "regression"

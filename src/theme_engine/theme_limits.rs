@@ -348,7 +348,11 @@ mod tests {
                 ..plain_usage
             },
         )]);
-        for (_, source) in BUILTIN_THEME_SOURCES {
+        for (id, source) in BUILTIN_THEME_SOURCES {
+            // This theme exists to show the Fable weekly quota.
+            if *id == CLAUDE_BLOCK_GAUGE_THEME_ID {
+                continue;
+            }
             let mut theme: ThemeDocument = serde_json::from_str(source).unwrap();
             theme.prepare_runtime();
             for countdown in [false, true] {

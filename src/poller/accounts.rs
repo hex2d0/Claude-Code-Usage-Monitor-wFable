@@ -204,7 +204,7 @@ where
         if let Ok(usage) = &result {
             diagnose::log_lazy(|| {
                 format!(
-                    "{} account {} usage received: session={} weekly={} stale={}",
+                    "{} account {} usage received: session={} weekly={} stale={} limits=[{}]",
                     target.provider.descriptor().display_name,
                     target
                         .profile
@@ -213,7 +213,8 @@ where
                         .unwrap_or("default"),
                     usage.session.percentage,
                     usage.weekly.percentage,
-                    usage.stale
+                    usage.stale,
+                    limits_log(&usage.limits)
                 )
             });
         }
@@ -243,6 +244,23 @@ where
         Some(error) if data.accounts.is_empty() && data.is_empty() => Err(error),
         _ => Ok(data),
     }
+}
+
+/// Quota keys, used percentages and reset times only. Scope JSON can carry
+/// account details, so it is never logged.
+fn limits_log(limits: &[crate::models::UsageLimit]) -> String {
+    limits
+        .iter()
+        .map(|limit| {
+            let reset = limit
+                .usage
+                .resets_at
+                .and_then(|reset| reset.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or_else(|| "none".to_string(), |reset| reset.as_secs().to_string());
+            format!("{}={} reset={reset}", limit.key, limit.usage.percentage)
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn append_account_result(
@@ -794,5 +812,34 @@ mod tests {
         assert!(cached.accounts[0].usage.is_none());
         std::fs::remove_file(path).unwrap();
         std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn diagnose_limits_show_values_and_resets_without_scope() {
+        let limit =
+            |key: &str, percentage: f64, resets_at: Option<SystemTime>| crate::models::UsageLimit {
+                key: key.into(),
+                kind: "weekly_scoped".into(),
+                label: "Fable".into(),
+                model: Some("Fable".into()),
+                scope: Some(serde_json::json!({"model":{"display_name":"Fable"}})),
+                usage: UsageSection {
+                    available: true,
+                    percentage,
+                    resets_at,
+                },
+                ..Default::default()
+            };
+        let reset = UNIX_EPOCH + Duration::from_secs(1_792_281_600);
+        let line = limits_log(&[
+            limit("weekly_scoped_fable", 0.0, Some(reset)),
+            limit("seven_day_cowork", 12.5, None),
+        ]);
+        assert_eq!(
+            line,
+            "weekly_scoped_fable=0 reset=1792281600; seven_day_cowork=12.5 reset=none"
+        );
+        assert!(!line.contains("display_name"));
+        assert_eq!(limits_log(&[]), "");
     }
 }
