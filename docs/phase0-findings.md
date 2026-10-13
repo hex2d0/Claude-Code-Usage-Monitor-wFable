@@ -111,10 +111,13 @@ Windows PowerShell 5.1（`powershell.exe`）で1回だけ実行する。PowerShe
 ```powershell
 $ErrorActionPreference = 'Stop'
 $credPath = Join-Path $env:USERPROFILE '.claude\.credentials.json'
-$token = (Get-Content -Raw -LiteralPath $credPath | ConvertFrom-Json).claudeAiOauth.accessToken
-$res = Invoke-WebRequest -UseBasicParsing -Uri 'https://api.anthropic.com/api/oauth/usage' `
-  -Headers @{ Authorization = "Bearer $token"; 'anthropic-beta' = 'oauth-2025-04-20' }
-Remove-Variable token
+try {
+  $token = (Get-Content -Raw -LiteralPath $credPath | ConvertFrom-Json).claudeAiOauth.accessToken
+  $res = Invoke-WebRequest -UseBasicParsing -Uri 'https://api.anthropic.com/api/oauth/usage' `
+    -Headers @{ Authorization = "Bearer $token"; 'anthropic-beta' = 'oauth-2025-04-20' }
+} finally {
+  Remove-Variable token -ErrorAction SilentlyContinue
+}
 $raw = $res.Content | ConvertFrom-Json
 function TypeOf($v) { if ($null -eq $v) { 'null' } else { $v.GetType().Name } }
 $out = [ordered]@{
@@ -298,3 +301,34 @@ value = (p + floor(p / 10)) / 109 * 100 + 0.001
 - MSVCターゲットでのビルドと`cargo test`（上流CIの構成）
 - 新しいテーマの幅（約210論理px）が、タスクバーのロックが無効なときにアプリボタンと重なって退避しないか
 - 上流issueの[CodeZeno/Claude-Code-Usage-Monitor#56](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/56)と[CodeZeno/Claude-Code-Usage-Monitor#61](https://github.com/CodeZeno/Claude-Code-Usage-Monitor/issues/61)に`limits`の実例が載っている可能性がある。このセッションからはissueを読めないため未確認。
+
+---
+
+## 付録：この環境での検証手順（Linuxコンテナ、次のセッション向け）
+
+コンテナは使い捨てなので、次のセッションでは以下をやり直す必要がある。`$SP`は作業用ディレクトリ（リポジトリの外）を指す。
+
+```bash
+# Windows向けのRustターゲットとmingw-w64
+rustup target add x86_64-pc-windows-gnu
+apt-get install -y mingw-w64 wine64
+
+# #[link(name = "Advapi32")] を大文字小文字を区別するmingwで解決させる
+mkdir -p $SP/mingw-case-libs
+ln -sf /usr/x86_64-w64-mingw32/lib/libadvapi32.a $SP/mingw-case-libs/libAdvapi32.a
+export RUSTFLAGS="-L $SP/mingw-case-libs"
+
+cargo build --release --locked --target x86_64-pc-windows-gnu
+cargo test --no-run --locked --target x86_64-pc-windows-gnu
+
+# wineにないwinsqlite3.dllの代わりを、libsqlite3-sysに同梱のSQLiteソースからビルドする
+#（libsqlite3-sys 0.30を features=["bundled"] で使う使い捨てのcargoプロジェクトで cargo fetch しておく）
+mkdir -p $SP/winsqlite
+x86_64-w64-mingw32-gcc -O1 -shared '-DSQLITE_API=__declspec(dllexport)' \
+  -o $SP/winsqlite/winsqlite3.dll ~/.cargo/registry/src/*/libsqlite3-sys-0.30.1/sqlite3/sqlite3.c
+
+# テストは1件ずつ別プロセスで実行する（1件が未実装APIで中断すると、プロセス全体が止まるため）
+export WINEPREFIX=$SP/wineprefix WINEDEBUG=-all WINEPATH="Z:$SP/winsqlite"
+EXE=$(ls -t target/x86_64-pc-windows-gnu/debug/deps/claude_code_usage_monitor-*.exe | head -1)
+/usr/lib/wine/wine64 "$EXE" --exact 'poller::claude::limits::tests::malformed_entries_do_not_hide_valid_quotas'
+```
