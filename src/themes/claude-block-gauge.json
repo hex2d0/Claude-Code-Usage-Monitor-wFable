@@ -81,7 +81,7 @@
           "height": "8",
           "content": {
             "type": "progress",
-            "value": "(round(clamp(claude.session.percentage, 0, 100)) - (clamp(claude.session.percentage, 0, 100) % 1 == 0.5) * (floor(clamp(claude.session.percentage, 0, 100)) % 2 == 0)) * 110 / 109 + 0.001",
+            "value": "(round(clamp(claude.session.display, 0, 100)) - (clamp(claude.session.display, 0, 100) % 1 == 0.5) * (floor(clamp(claude.session.display, 0, 100)) % 2 == 0)) * 110 / 109 + 0.001",
             "direction": "left_to_right",
             "fill": {
               "color": "#DE7356FF"
@@ -103,7 +103,7 @@
           "height": "14",
           "content": {
             "type": "text",
-            "template": "{claude.session:usage_badge}",
+            "template": "{claude.session.display:usage_badge}",
             "font_family": "Segoe UI",
             "font_size": "11",
             "weight": "medium",
@@ -189,7 +189,7 @@
           "height": "8",
           "content": {
             "type": "progress",
-            "value": "(round(clamp(claude.weekly.percentage, 0, 100)) - (clamp(claude.weekly.percentage, 0, 100) % 1 == 0.5) * (floor(clamp(claude.weekly.percentage, 0, 100)) % 2 == 0)) * 110 / 109 + 0.001",
+            "value": "(round(clamp(claude.weekly.display, 0, 100)) - (clamp(claude.weekly.display, 0, 100) % 1 == 0.5) * (floor(clamp(claude.weekly.display, 0, 100)) % 2 == 0)) * 110 / 109 + 0.001",
             "direction": "left_to_right",
             "fill": {
               "color": "#DE7356FF"
@@ -211,7 +211,7 @@
           "height": "14",
           "content": {
             "type": "text",
-            "template": "{claude.weekly:usage_badge}",
+            "template": "{claude.weekly.display:usage_badge}",
             "font_family": "Segoe UI",
             "font_size": "11",
             "weight": "medium",
@@ -297,7 +297,7 @@
           "height": "8",
           "content": {
             "type": "progress",
-            "value": "(round(clamp(claude.limits.weekly_scoped_fable.percentage, 0, 100)) - (clamp(claude.limits.weekly_scoped_fable.percentage, 0, 100) % 1 == 0.5) * (floor(clamp(claude.limits.weekly_scoped_fable.percentage, 0, 100)) % 2 == 0)) * 110 / 109 + 0.001",
+            "value": "claude.limits.weekly_scoped_fable.available * ((round(clamp(claude.limits.weekly_scoped_fable.display, 0, 100)) - (clamp(claude.limits.weekly_scoped_fable.display, 0, 100) % 1 == 0.5) * (floor(clamp(claude.limits.weekly_scoped_fable.display, 0, 100)) % 2 == 0)) * 110 / 109 + 0.001)",
             "direction": "left_to_right",
             "fill": {
               "color": "#DE7356FF"
@@ -319,7 +319,7 @@
           "height": "14",
           "content": {
             "type": "text",
-            "template": "{claude.limits.weekly_scoped_fable:usage_badge}",
+            "template": "{claude.limits.weekly_scoped_fable.display:usage_badge}",
             "font_family": "Segoe UI",
             "font_size": "11",
             "weight": "medium",

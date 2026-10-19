@@ -3511,27 +3511,29 @@ fn claude_block_gauge_fills_one_pixel_per_percent_inside_ten_blocks() {
             number(&object.y) + number(&object.height) / 2,
         )
     });
-    // Text rounds half to even ("{:.0}"), so the gauge does too.
-    for (percentage, filled) in [
-        (0.0, 0),
-        (1.0, 1),
-        (10.0, 10),
-        (37.0, 37),
-        (99.0, 99),
-        (100.0, 100),
-        (112.5, 100),
-        (-5.0, 0),
-        (12.5, 12),
-        (13.5, 14),
-        (13.617_050_8, 14),
+    // Blocks show used usage, or what is left when Usage direction counts
+    // down. Text rounds half to even ("{:.0}"), so the gauge does too.
+    for (percentage, used, left) in [
+        (0.0, 0, 100),
+        (1.0, 1, 99),
+        (10.0, 10, 90),
+        (37.0, 37, 63),
+        (99.0, 99, 1),
+        (100.0, 100, 0),
+        (112.5, 100, 0),
+        (-5.0, 0, 100),
+        (12.5, 12, 88),
+        (13.5, 14, 86),
+        (13.617_050_8, 14, 86),
     ] {
-        for fable in [true, false] {
+        for (fable, countdown) in [(true, false), (false, false), (true, true), (false, true)] {
+            let filled = if countdown { left } else { used };
             let usage = claude_block_gauge_usage(percentage, None, fable);
             let rendered = render_theme_surface_with_runtime(
                 &theme,
                 0,
                 Some(&usage),
-                ThemeRuntime::new(true, false, false),
+                ThemeRuntime::new(true, false, false).with_countdown(countdown),
             );
             assert!(rendered.warnings.is_empty(), "{:?}", rendered.warnings);
             assert_eq!(rendered.height, 46);
@@ -3541,7 +3543,9 @@ fn claude_block_gauge_fills_one_pixel_per_percent_inside_ten_blocks() {
                 for along in 0..109 {
                     let pixel = rendered.pixels[(y * rendered.width + x + along) as usize];
                     let (block, within) = (along / 11, along % 11);
-                    let context = format!("{percentage}% fable={fable} row={row} x={along}");
+                    let context = format!(
+                        "{percentage}% fable={fable} countdown={countdown} row={row} x={along}"
+                    );
                     if within == 10 {
                         assert_eq!(pixel, 0, "gap {context}");
                     } else if block * 10 + within < filled {
@@ -3610,19 +3614,25 @@ fn claude_block_gauge_text_shows_percent_largest_countdown_unit_and_placeholders
     assert_eq!(text(Some(&without_fable), runtime, "fable-percent"), "--");
     assert_eq!(text(Some(&without_fable), runtime, "fable-countdown"), "--");
 
-    // Remaining-usage display does not change the used percent.
+    // Counting down shows what is left, like the default theme.
     let usage = claude_block_gauge_usage(67.0, Some(reset), true);
-    assert_eq!(
-        text(Some(&usage), runtime.with_countdown(true), "fable-percent"),
-        "67%"
-    );
-    // Before the first poll and after an auth failure, as upstream themes show.
+    let remaining = runtime.with_countdown(true);
     for row in rows {
-        let loading = runtime.with_poll_state(false, false);
-        let failed = runtime.with_poll_state(false, true);
-        assert_eq!(text(None, loading, &format!("{row}-percent")), "--");
-        assert_eq!(text(None, failed, &format!("{row}-percent")), "!");
-        assert_eq!(text(None, failed, &format!("{row}-countdown")), "--");
+        assert_eq!(
+            text(Some(&usage), remaining, &format!("{row}-percent")),
+            "33%"
+        );
+    }
+    assert_eq!(text(Some(&without_fable), remaining, "fable-percent"), "--");
+    // Before the first poll and after an auth failure, as upstream themes show.
+    for direction in [runtime, remaining] {
+        for row in rows {
+            let loading = direction.with_poll_state(false, false);
+            let failed = direction.with_poll_state(false, true);
+            assert_eq!(text(None, loading, &format!("{row}-percent")), "--");
+            assert_eq!(text(None, failed, &format!("{row}-percent")), "!");
+            assert_eq!(text(None, failed, &format!("{row}-countdown")), "--");
+        }
     }
     for variant in ["dark", "light"] {
         let headings = rows
