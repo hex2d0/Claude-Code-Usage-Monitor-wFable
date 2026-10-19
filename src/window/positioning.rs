@@ -480,8 +480,13 @@ pub(super) fn foreground_is_fullscreen_on_display(display_index: usize) -> bool 
         {
             return false;
         }
-        rect_covers_monitor(rect, display.rect)
+        window_is_fullscreen(rect, display.rect, IsZoomed(foreground).as_bool())
     }
+}
+
+pub(super) fn window_is_fullscreen(rect: RECT, monitor: RECT, maximized: bool) -> bool {
+    // Maximized windows also cover the monitor when the taskbar auto-hides.
+    !maximized && rect_covers_monitor(rect, monitor)
 }
 
 pub(super) fn rect_covers_monitor(rect: RECT, monitor: RECT) -> bool {
@@ -731,6 +736,34 @@ pub(super) fn monitor_index_for_handle(
     handle: HMONITOR,
 ) -> Option<usize> {
     displays.iter().position(|display| display.handle == handle)
+}
+
+/// Resolve a saved monitor: the device name wins, then the saved index. A
+/// named monitor that is absent (e.g. not enumerated yet during boot) yields
+/// None so callers fall back without the index silently picking another one.
+pub(super) fn resolve_saved_monitor(
+    displays: &[native_interop::DisplayMonitor],
+    index: usize,
+    device: Option<&str>,
+) -> Option<usize> {
+    let names: Vec<Option<String>> = displays
+        .iter()
+        .map(|display| native_interop::monitor_device_name(display.handle))
+        .collect();
+    resolve_saved_monitor_in(&names, index, device)
+}
+
+fn resolve_saved_monitor_in(
+    names: &[Option<String>],
+    index: usize,
+    device: Option<&str>,
+) -> Option<usize> {
+    match device {
+        Some(device) => names
+            .iter()
+            .position(|name| name.as_deref() == Some(device)),
+        None => (index < names.len()).then_some(index),
+    }
 }
 
 pub(super) fn override_primary_placement(
@@ -1027,7 +1060,24 @@ pub(super) fn taskbar_ejection_required(
     overlaps_apps: bool,
     locked: bool,
 ) -> bool {
-    taskbar_surface_is_clipped(taskbar, widget) || (!locked && overlaps_apps)
+    if locked {
+        // Windows 10's 40px bar slightly clips the built-in 46px layouts.
+        // Honor the lock while at least half the widget remains visible, but
+        // retain the visibility fallback for mostly hidden layouts.
+        return taskbar_surface_is_clipped(taskbar, widget)
+            && calculate_rect_overlap_ratio(widget, taskbar) < 0.5;
+    }
+    taskbar_surface_is_clipped(taskbar, widget) || overlaps_apps
+}
+
+pub(super) fn taskbar_reposition_required(
+    taskbar: RECT,
+    widget: RECT,
+    target: RECT,
+    locked: bool,
+) -> bool {
+    taskbar_ejection_required(taskbar, widget, false, locked)
+        && !taskbar_ejection_required(taskbar, target, false, locked)
 }
 
 /// Choose a measured gap near the drag, including gaps left of centred apps.
@@ -1063,4 +1113,39 @@ pub(super) fn taskbar_free_dock_slot(
             calculate_rect_overlap_ratio(widget, *a)
                 .total_cmp(&calculate_rect_overlap_ratio(widget, *b))
         })
+}
+
+#[cfg(test)]
+mod resolve_saved_monitor_tests {
+    use super::resolve_saved_monitor_in;
+
+    fn names(list: &[&str]) -> Vec<Option<String>> {
+        list.iter().map(|name| Some((*name).to_string())).collect()
+    }
+
+    #[test]
+    fn device_name_follows_the_monitor_when_enumeration_order_changes() {
+        // Saved on DISPLAY2 at index 1; a third monitor now sorts before it.
+        let displays = names(&[r"\\.\DISPLAY1", r"\\.\DISPLAY3", r"\\.\DISPLAY2"]);
+        assert_eq!(
+            resolve_saved_monitor_in(&displays, 1, Some(r"\\.\DISPLAY2")),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn absent_named_monitor_does_not_fall_back_to_the_stale_index() {
+        let displays = names(&[r"\\.\DISPLAY1", r"\\.\DISPLAY3"]);
+        assert_eq!(
+            resolve_saved_monitor_in(&displays, 1, Some(r"\\.\DISPLAY2")),
+            None
+        );
+    }
+
+    #[test]
+    fn placements_saved_without_a_device_keep_using_the_index() {
+        let displays = names(&[r"\\.\DISPLAY1", r"\\.\DISPLAY2"]);
+        assert_eq!(resolve_saved_monitor_in(&displays, 1, None), Some(1));
+        assert_eq!(resolve_saved_monitor_in(&displays, 5, None), None);
+    }
 }

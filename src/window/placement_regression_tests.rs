@@ -12,6 +12,9 @@ fn state_for(theme: ThemeDocument, placement: PlacementOverride) -> AppState {
         language: LanguageId::English,
         install_channel: InstallChannel::Portable,
         providers: ProviderSet::default(),
+        show_antigravity_gemini: true,
+        show_antigravity_external: true,
+        crossfade_opacity: 1.0,
         accounts: Default::default(),
         data: None,
         poll_interval_ms: POLL_15_MIN,
@@ -60,10 +63,53 @@ fn placement(nest: &str) -> PlacementOverride {
     PlacementOverride {
         nest: nest.into(),
         monitor_index: 0,
+        monitor_device: None,
         screen_x: 0,
         screen_y: 0,
         tray_offset: 0,
         floating_host: None,
+    }
+}
+
+#[test]
+fn saved_monitor_device_overrides_an_invalid_index_for_both_hosts() {
+    let displays = native_interop::find_monitors();
+    for (index, display) in displays.iter().enumerate() {
+        let device = native_interop::monitor_device_name(display.handle)
+            .expect("enumerated monitor must have a device name");
+        for nest in ["taskbar", "floating"] {
+            let mut saved = placement(nest);
+            saved.monitor_index = usize::MAX;
+            saved.monitor_device = Some(device.clone());
+            saved.screen_x = display.rect.left;
+            saved.screen_y = display.rect.top;
+            let state = state_for(ThemeDocument::starter(), saved.clone());
+            let theme = theme_with_placement(&state, false).unwrap();
+            assert_eq!(theme.surfaces[0].placement.reference.display, index);
+            assert_eq!(state.placement_override, Some(saved));
+        }
+    }
+}
+
+#[test]
+fn absent_saved_monitor_preserves_the_choice_while_using_host_fallbacks() {
+    for nest in ["taskbar", "floating"] {
+        let mut saved = placement(nest);
+        saved.monitor_index = usize::MAX;
+        saved.monitor_device = Some("missing-monitor".into());
+        saved.screen_x = 400;
+        saved.screen_y = 300;
+        let state = state_for(ThemeDocument::starter(), saved.clone());
+        let fallback = theme_with_placement(&state, false).unwrap();
+        let mut legacy = saved.clone();
+        legacy.monitor_device = None;
+        let legacy_state = state_for(ThemeDocument::starter(), legacy);
+        let expected = theme_with_placement(&legacy_state, false).unwrap();
+        assert_eq!(
+            fallback.surfaces[0].placement,
+            expected.surfaces[0].placement
+        );
+        assert_eq!(state.placement_override, Some(saved));
     }
 }
 

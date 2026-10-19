@@ -399,6 +399,7 @@ fn studio_preview_uses_cached_poll_failure_state_instead_of_stale_values() {
             monthly: None,
             credits: None,
             stale: false,
+            ..Default::default()
         },
     )]));
     app.usage_poll_ok = false;
@@ -442,6 +443,7 @@ fn app_with_surfaces(surfaces: Vec<SceneObject>) -> StudioApp {
         startup_enabled: false,
         theme,
         theme_path: None,
+        available_themes: AvailableThemesCache::new(theme_engine::themes_directory()),
         selection: Selection::Surface(0),
         preview: None,
         preview_dirty: true,
@@ -486,6 +488,238 @@ fn app_with_surfaces(surfaces: Vec<SceneObject>) -> StudioApp {
         context_menu_selection: None,
         delete_context_menu_confirmation: None,
     }
+}
+
+mod monitor_reconnection {
+    use super::*;
+    use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::WindowsAndMessaging::*;
+
+    struct MonitorWindow(HWND);
+
+    impl MonitorWindow {
+        fn new() -> Self {
+            static REGISTERED: std::sync::Once = std::sync::Once::new();
+            unsafe extern "system" fn procedure(
+                hwnd: HWND,
+                message: u32,
+                wparam: WPARAM,
+                lparam: LPARAM,
+            ) -> LRESULT {
+                unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+            }
+            let class = native_interop::wide_str("ClaudeCodeUsageMonitor");
+            unsafe {
+                let module = GetModuleHandleW(PCWSTR::null()).unwrap();
+                REGISTERED.call_once(|| {
+                    let window_class = WNDCLASSW {
+                        lpfnWndProc: Some(procedure),
+                        hInstance: module.into(),
+                        lpszClassName: PCWSTR::from_raw(class.as_ptr()),
+                        ..Default::default()
+                    };
+                    assert_ne!(RegisterClassW(&window_class), 0);
+                });
+                Self(
+                    CreateWindowExW(
+                        WINDOW_EX_STYLE::default(),
+                        PCWSTR::from_raw(class.as_ptr()),
+                        PCWSTR::null(),
+                        WINDOW_STYLE::default(),
+                        0,
+                        0,
+                        0,
+                        0,
+                        Some(HWND_MESSAGE),
+                        None,
+                        Some(module.into()),
+                        None,
+                    )
+                    .unwrap(),
+                )
+            }
+        }
+
+        fn owner(&self) -> isize {
+            self.0 .0 as isize
+        }
+
+        fn assert_message(&self, message: u32) {
+            let mut received = MSG::default();
+            assert!(unsafe {
+                PeekMessageW(&mut received, Some(self.0), message, message, PM_REMOVE).as_bool()
+            });
+            assert_eq!(received.hwnd, self.0);
+            assert_eq!(received.message, message);
+        }
+    }
+
+    impl Drop for MonitorWindow {
+        fn drop(&mut self) {
+            unsafe { DestroyWindow(self.0).unwrap() };
+        }
+    }
+
+    #[test]
+    fn dashboard_reconnects_after_monitor_replacement_and_preserves_edits() {
+        let original = MonitorWindow::new();
+        let mut app = app_with_surfaces(vec![root("root")]);
+        app.owner = original.owner();
+        app.dirty = true;
+        app.theme.name = "Unsaved theme".into();
+        app.undo_stack.push(app.theme.clone());
+        app.context_menu_dirty = true;
+        app.settings.poll_interval_ms = POLL_5_MIN;
+        drop(original);
+
+        let replacement = MonitorWindow::new();
+        crate::dashboard::publish_update_status(
+            replacement.0,
+            crate::dashboard::UpdateStatus::Available("3.0.0".into()),
+        );
+        app.last_cache_read = Instant::now() - Duration::from_secs(2);
+        app.refresh_usage_cache();
+
+        assert_eq!(app.owner, replacement.owner());
+        assert_eq!(
+            app.update_status,
+            crate::dashboard::UpdateStatus::Available("3.0.0".into())
+        );
+        assert!(app.dirty);
+        assert_eq!(app.theme.name, "Unsaved theme");
+        assert_eq!(app.undo_stack.len(), 1);
+        assert!(app.context_menu_dirty);
+        assert_eq!(app.settings.poll_interval_ms, POLL_5_MIN);
+        app.request_refresh();
+        assert!(app.settings_error.is_none());
+        replacement.assert_message(WM_APP_REFRESH_NOW);
+    }
+
+    #[test]
+    fn dashboard_commands_reconnect_before_periodic_refresh() {
+        let original = MonitorWindow::new();
+        let mut app = app_with_surfaces(vec![root("root")]);
+        app.owner = original.owner();
+        drop(original);
+        let replacement = MonitorWindow::new();
+        crate::dashboard::publish_update_status(
+            replacement.0,
+            crate::dashboard::UpdateStatus::Idle,
+        );
+
+        app.request_refresh();
+        assert!(app.settings_error.is_none());
+        replacement.assert_message(WM_APP_REFRESH_NOW);
+        app.save_settings();
+        assert!(app.settings_error.is_none());
+        replacement.assert_message(WM_APP_SETTINGS_UPDATED);
+        for message in [
+            native_interop::WM_APP_ENABLE_DIAGNOSTICS,
+            native_interop::WM_APP_DISABLE_DIAGNOSTICS,
+        ] {
+            studio_diagnostics::send_owner_message(app.owner, message).unwrap();
+            replacement.assert_message(message);
+        }
+        app.request_update_action();
+        assert!(app.theme_error.is_none());
+        assert_eq!(app.update_status, crate::dashboard::UpdateStatus::Checking);
+        replacement.assert_message(native_interop::WM_APP_CHECK_FOR_UPDATES);
+    }
+
+    #[test]
+    fn dashboard_rejects_stale_or_unrelated_monitor_snapshots() {
+        let original = MonitorWindow::new();
+        let dead_owner = original.owner();
+        drop(original);
+        let replacement = MonitorWindow::new();
+        let snapshot_path = app_settings::app_data_directory().join("update-status.json");
+        app_settings::write_json_atomic(
+            &snapshot_path,
+            &serde_json::json!({
+                "owner": replacement.owner(),
+                "process_id": 0,
+                "status": {"Available": "3.0.0"}
+            }),
+        )
+        .unwrap();
+        assert_eq!(crate::dashboard::resolve_monitor_owner(dead_owner), None);
+        assert_eq!(
+            crate::dashboard::read_update_status(replacement.owner()),
+            crate::dashboard::UpdateStatus::Idle
+        );
+
+        let unrelated_class = native_interop::wide_str("STATIC");
+        let unrelated = MonitorWindow(unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                PCWSTR::from_raw(unrelated_class.as_ptr()),
+                PCWSTR::null(),
+                WINDOW_STYLE::default(),
+                0,
+                0,
+                0,
+                0,
+                Some(HWND_MESSAGE),
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+        });
+        crate::dashboard::publish_update_status(
+            unrelated.0,
+            crate::dashboard::UpdateStatus::Available("3.0.0".into()),
+        );
+        assert_eq!(crate::dashboard::resolve_monitor_owner(dead_owner), None);
+        assert_eq!(
+            crate::dashboard::read_update_status(unrelated.owner()),
+            crate::dashboard::UpdateStatus::Idle
+        );
+
+        crate::dashboard::publish_update_status(
+            replacement.0,
+            crate::dashboard::UpdateStatus::Idle,
+        );
+        drop(replacement);
+        assert_eq!(crate::dashboard::resolve_monitor_owner(dead_owner), None);
+        std::fs::write(snapshot_path, b"incomplete JSON").unwrap();
+        assert_eq!(crate::dashboard::resolve_monitor_owner(dead_owner), None);
+    }
+
+    #[test]
+    fn dashboard_keeps_live_owner_and_standalone_editor_disconnected() {
+        let original = MonitorWindow::new();
+        let other = MonitorWindow::new();
+        crate::dashboard::publish_update_status(other.0, crate::dashboard::UpdateStatus::Idle);
+        assert_eq!(
+            crate::dashboard::resolve_monitor_owner(original.owner()),
+            Some(original.owner())
+        );
+        assert_eq!(crate::dashboard::resolve_monitor_owner(0), None);
+    }
+}
+
+#[test]
+fn available_themes_keeps_current_external_theme_fresh_without_stale_fallbacks() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut app = app_with_surfaces(vec![root("root")]);
+    app.available_themes = AvailableThemesCache::new(directory.path().join("library"));
+    let first_path = directory.path().join("first.json");
+    app.theme_path = Some(first_path.clone());
+    app.theme.name = "First".into();
+    let themes = app.available_themes();
+    assert_eq!(themes.len(), 1);
+    assert_eq!(themes[0].path, first_path);
+    app.theme.name = "Renamed".into();
+    assert_eq!(app.available_themes()[0].name, "Renamed");
+    let second_path = directory.path().join("second.json");
+    app.theme_path = Some(second_path.clone());
+    let themes = app.available_themes();
+    assert_eq!(themes.len(), 1);
+    assert_eq!(themes[0].path, second_path);
+    app.theme_path = None;
+    assert!(app.available_themes().is_empty());
 }
 
 #[test]
